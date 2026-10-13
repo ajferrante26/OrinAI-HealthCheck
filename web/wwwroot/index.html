@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Service health</title>
+    <style>
+        :root { color-scheme: light dark; }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 42rem;
+            margin: 3rem auto;
+            padding: 0 1rem;
+            line-height: 1.5;
+        }
+        h1 { margin-bottom: .25rem; }
+        .sub { color: #666; margin-top: 0; font-size: .9rem; }
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin: 1.5rem 0;
+        }
+        button {
+            padding: .5rem 1rem;
+            font-size: 1rem;
+            cursor: pointer;
+        }
+        button[disabled] { cursor: progress; opacity: .6; }
+        label { font-size: .9rem; user-select: none; }
+        .badge {
+            display: inline-block;
+            padding: .15rem .6rem;
+            border-radius: 999px;
+            font-size: .8rem;
+            font-weight: 600;
+            letter-spacing: .02em;
+        }
+        .badge.up      { background: #1b7f3b; color: #fff; }
+        .badge.down    { background: #a12222; color: #fff; }
+        .badge.unknown { background: #555;    color: #fff; }
+        pre {
+            background: rgba(127, 127, 127, .12);
+            padding: .75rem 1rem;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: .85rem;
+        }
+        .meta { font-size: .85rem; color: #666; }
+    </style>
+</head>
+<body>
+    <h1>Service health</h1>
+    <p class="sub">
+        The browser calls this server at <code>/api/health</code>.
+        The backend then queries the Python health API.
+    </p>
+
+    <div class="controls">
+        <button id="check" type="button">Check health</button>
+        <label>
+            <input type="checkbox" id="poll"> Auto refresh every 10s
+        </label>
+    </div>
+
+    <p>
+        <span id="badge" class="badge unknown">NO DATA</span>
+        <span id="meta" class="meta"></span>
+    </p>
+
+    <pre id="result">No check performed yet.</pre>
+
+    <script>
+        // Path on the C# backend. The Python host and port are configured
+        // server side in Program.cs and never appear in this file.
+        const ENDPOINT = '/api/health';
+        const POLL_MS = 10_000;
+
+        const button = document.getElementById('check');
+        const pollBox = document.getElementById('poll');
+        const badge = document.getElementById('badge');
+        const meta = document.getElementById('meta');
+        const result = document.getElementById('result');
+
+        let pollHandle = null;
+
+        function setBadge(state, text) {
+            badge.className = 'badge ' + state;
+            badge.textContent = text;
+        }
+
+        async function checkHealth() {
+            button.disabled = true;
+            setBadge('unknown', 'CHECKING');
+            meta.textContent = '';
+            result.textContent = 'Checking...';
+
+            const started = performance.now();
+
+            try {
+                const response = await fetch(ENDPOINT, {
+                    headers: { 'Accept': 'application/json' },
+                    cache: 'no-store'
+                });
+
+                // The backend returns JSON on success and on 502/504,
+                // so parse the body regardless of the status code.
+                let payload = null;
+                try {
+                    payload = await response.json();
+                } catch {
+                    payload = { raw: await response.text() };
+                }
+
+                const elapsed = Math.round(performance.now() - started);
+                meta.textContent = `HTTP ${response.status} in ${elapsed} ms`;
+
+                if (!response.ok) {
+                    // Reached the C# server, but it could not complete
+                    // the call to the Python API.
+                    setBadge('down', 'CHECK FAILED');
+                } else if (payload && payload.status === true) {
+                    setBadge('up', 'UP');
+                } else {
+                    setBadge('down', 'DOWN');
+                }
+
+                result.textContent = JSON.stringify(payload, null, 2);
+            } catch (err) {
+                // fetch itself failed, so the browser could not reach
+                // the C# server at all.
+                setBadge('down', 'UNREACHABLE');
+                meta.textContent = '';
+                result.textContent = 'Could not reach the web server: ' + err.message;
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        function applyPolling() {
+            if (pollHandle !== null) {
+                clearInterval(pollHandle);
+                pollHandle = null;
+            }
+            if (pollBox.checked) {
+                pollHandle = setInterval(checkHealth, POLL_MS);
+            }
+        }
+
+        button.addEventListener('click', checkHealth);
+        pollBox.addEventListener('change', () => {
+            applyPolling();
+            if (pollBox.checked) checkHealth();
+        });
+
+        window.addEventListener('beforeunload', () => {
+            if (pollHandle !== null) clearInterval(pollHandle);
+        });
+
+        checkHealth();
+    </script>
+</body>
+</html>
